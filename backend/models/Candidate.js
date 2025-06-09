@@ -33,6 +33,10 @@ const CandidateSchema = new mongoose.Schema({
     },
   ],
   resumeText: { type: String, index: 'text' },
+  resumeFile: {
+    filename: String,   // original filename or unique stored filename
+    url: String         // file URL (if stored on cloud)
+  },
   createdAt: { type: Date, default: Date.now },
 });
 

@@ -6,41 +6,59 @@ const Job = require('../models/Job');
 const Candidate = require('../models/Candidate');
 const { authenticateJWT, authorizeRoles } = require('../middleware/auth');
 
+// Helper function to validate IDs
+const isValidId = (id) => mongoose.Types.ObjectId.isValid(id);
+
+// Helper function to handle population errors
+const safePopulate = async (query, populateOptions) => {
+  try {
+    return await query.populate(populateOptions).exec();
+  } catch (err) {
+    console.error('Population error:', err);
+    return query.exec();
+  }
+};
+
 // Candidate applies to a job
 router.post('/', authenticateJWT, authorizeRoles('candidate'), async (req, res, next) => {
   try {
-    console.log('Full user object from JWT:', req.user);
     const userId = req.user.userId;
-    console.log('Extracted userId:', userId);
 
-    if (!userId) {
-      console.error('No user ID found in token');
-      return res.status(401).json({ error: 'User ID missing from token' });
+    if (!isValidId(userId)) {
+      return res.status(400).json({ 
+        error: 'Invalid user ID format',
+        code: 'INVALID_USER_ID'
+      });
     }
 
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
-      console.error('Invalid user ID format:', userId);
-      return res.status(400).json({ error: 'Invalid user ID format' });
-    }
-
-    const candidate = await Candidate.findOne({ userId: userId });
-    console.log('Candidate search query:', { userId: userId });
-    console.log('Found candidate:', candidate);
-
+    const candidate = await Candidate.findOne({ userId });
     if (!candidate) {
-      console.error('No candidate found for user:', userId);
-      return res.status(400).json({ error: 'Candidate profile not found for the user' });
+      return res.status(404).json({ 
+        error: 'Candidate profile not found',
+        code: 'CANDIDATE_NOT_FOUND'
+      });
     }
 
     const { jobId, coverLetter } = req.body;
-    if (!jobId || !mongoose.Types.ObjectId.isValid(jobId)) {
-      return res.status(400).json({ error: 'Invalid or missing jobId' });
+    if (!isValidId(jobId)) {
+      return res.status(400).json({ 
+        error: 'Invalid job ID',
+        code: 'INVALID_JOB_ID'
+      });
     }
 
     const job = await Job.findById(jobId);
-    console.log('Job found:', job);
-    if (!job || !job.isActive) {
-      return res.status(400).json({ error: 'Invalid or inactive job' });
+    if (!job) {
+      return res.status(404).json({ 
+        error: 'Job not found',
+        code: 'JOB_NOT_FOUND'
+      });
+    }
+    if (!job.isActive) {
+      return res.status(400).json({ 
+        error: 'Job is no longer active',
+        code: 'JOB_INACTIVE'
+      });
     }
 
     const existingApplication = await Application.findOne({
@@ -48,109 +66,266 @@ router.post('/', authenticateJWT, authorizeRoles('candidate'), async (req, res, 
       candidateId: candidate._id,
     });
     if (existingApplication) {
-      return res.status(409).json({ error: 'You have already applied to this job' });
+      return res.status(409).json({ 
+        error: 'Already applied to this job',
+        code: 'DUPLICATE_APPLICATION'
+      });
     }
 
-    const application = new Application({
+    const application = await Application.create({
       jobId,
       candidateId: candidate._id,
-      coverLetter,
+      coverLetter: coverLetter || '',
       status: 'Applied',
       appliedAt: new Date(),
     });
 
-    await application.save();
     res.status(201).json(application);
   } catch (err) {
-    console.error('Error in application POST route:', err);
     next(err);
   }
 });
 
-// Get Applications - support filtering by job or candidate, pagination, status
-router.get('/', authenticateJWT, async (req, res, next) => {
+// Get candidate's applications
+router.get('/my-applications', authenticateJWT, authorizeRoles('candidate'), async (req, res, next) => {
   try {
-    const {
-      jobId,
-      candidateId,
-      status,
-      page = 1,
-      limit = 10,
-      sortBy = 'appliedAt',
-      sortOrder = 'desc',
-    } = req.query;
+    const candidate = await Candidate.findOne({ userId: req.user.userId });
+    if (!candidate) {
+      return res.status(404).json({ 
+        error: 'Candidate profile not found',
+        code: 'CANDIDATE_NOT_FOUND'
+      });
+    }
 
-    const filters = {};
-    if (jobId && mongoose.Types.ObjectId.isValid(jobId)) filters.jobId = jobId;
-    if (candidateId && mongoose.Types.ObjectId.isValid(candidateId)) filters.candidateId = candidateId;
-    if (status) filters.status = status;
+    let applications = await Application.find({ candidateId: candidate._id })
+      .populate({
+        path: 'jobId',
+        select: 'title company location salary employmentType isActive',
+        populate: {
+          path: 'company',
+          select: 'name logo'
+        }
+      })
+      .sort({ appliedAt: -1 })
+      .lean();
 
-    const sortOptions = {};
-    sortOptions[sortBy] = sortOrder === 'desc' ? -1 : 1;
+    // Filter out applications with deleted jobs
+    applications = applications.filter(app => app.jobId);
 
-    const applications = await Application.find(filters)
-      .populate('jobId', 'jobTitle company location')
-      .populate('candidateId', 'fullName email skills')
-      .sort(sortOptions)
-      .skip((page - 1) * limit)
-      .limit(Number(limit));
-
-    const totalCount = await Application.countDocuments(filters);
-
-    res.json({
-      page: Number(page),
-      totalPages: Math.ceil(totalCount / limit),
-      totalCount,
-      applications,
-    });
+    res.json(applications);
   } catch (err) {
     next(err);
   }
 });
 
-// Update application status (for employers)
-router.patch('/:id', authenticateJWT, authorizeRoles('employer'), async (req, res, next) => {
+// Get applications for employer's jobs
+router.get('/employer', authenticateJWT, authorizeRoles('employer'), async (req, res, next) => {
   try {
-    const { status } = req.body;
-    const validStatuses = ['Applied', 'Under Review', 'Interview', 'Rejected', 'Hired'];
-    if (!validStatuses.includes(status)) {
-      return res.status(400).json({ error: 'Invalid status value' });
+    if (!isValidId(req.user.userId)) {
+      return res.status(400).json({ 
+        error: 'Invalid employer ID',
+        code: 'INVALID_EMPLOYER_ID'
+      });
     }
 
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-      return res.status(400).json({ error: 'Invalid application ID' });
+    // Find all jobs for this employer
+    const jobs = await Job.find({ employerId: req.user.userId }).select('_id');
+    
+    if (!jobs.length) {
+      return res.status(404).json({
+        error: "No jobs posted yet",
+        code: "NO_JOBS_POSTED",
+        applications: []
+      });
     }
 
-    const application = await Application.findByIdAndUpdate(
-      req.params.id,
-      { $set: { status } },
-      { new: true }
+    // Find applications for these jobs
+    let applications = await Application.find({ 
+      jobId: { $in: jobs.map(j => j._id) }
+    })
+    .populate({
+      path: 'jobId',
+      select: 'title company location employmentType isActive',
+      populate: {
+        path: 'company',
+        select: 'name'
+      }
+    })
+    .populate({
+      path: 'candidateId',
+      select: 'fullName email skills isActive'
+    })
+    .sort({ appliedAt: -1 })
+    .lean();
+
+    // Filter out invalid applications
+    applications = applications.filter(app => 
+      app.jobId && app.candidateId && app.jobId.isActive
     );
-    if (!application) return res.status(404).json({ error: 'Application not found' });
+
+    res.json(applications);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Get single application by ID
+router.get('/:id', authenticateJWT, async (req, res, next) => {
+  try {
+    if (!isValidId(req.params.id)) {
+      return res.status(400).json({ 
+        error: 'Invalid application ID',
+        code: 'INVALID_APPLICATION_ID'
+      });
+    }
+
+    let application = await Application.findById(req.params.id)
+      .populate('jobId')
+      .populate('candidateId')
+      .lean();
+
+    if (!application) {
+      return res.status(404).json({ 
+        error: 'Application not found',
+        code: 'APPLICATION_NOT_FOUND'
+      });
+    }
+
+    // Check if referenced job exists
+    if (!application.jobId) {
+      return res.status(404).json({
+        error: 'Associated job not found',
+        code: 'JOB_NOT_FOUND'
+      });
+    }
+
+    // Authorization checks
+    if (req.user.role === 'candidate') {
+      if (!application.candidateId || application.candidateId.userId.toString() !== req.user.userId) {
+        return res.status(403).json({ 
+          error: 'Unauthorized to view this application',
+          code: 'UNAUTHORIZED_ACCESS'
+        });
+      }
+    }
+
+    if (req.user.role === 'employer') {
+      if (application.jobId.employerId.toString() !== req.user.userId) {
+        return res.status(403).json({ 
+          error: 'Unauthorized to view this application',
+          code: 'UNAUTHORIZED_ACCESS'
+        });
+      }
+    }
+
     res.json(application);
   } catch (err) {
     next(err);
   }
 });
 
-// Delete application (optional)
-router.delete('/:id', authenticateJWT, authorizeRoles('candidate','employer'), async (req, res, next) => {
+// Update application status
+router.patch('/:id', authenticateJWT, authorizeRoles('employer'), async (req, res, next) => {
   try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-      return res.status(400).json({ error: 'Invalid application ID' });
+    const { status } = req.body;
+    const validStatuses = ['Applied', 'Under Review', 'Interview', 'Rejected', 'Hired'];
+    
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ 
+        error: 'Invalid status value',
+        code: 'INVALID_STATUS'
+      });
+    }
+
+    if (!isValidId(req.params.id)) {
+      return res.status(400).json({ 
+        error: 'Invalid application ID',
+        code: 'INVALID_APPLICATION_ID'
+      });
     }
 
     const application = await Application.findById(req.params.id);
-    if (!application) return res.status(404).json({ error: 'Application not found' });
+    if (!application) {
+      return res.status(404).json({ 
+        error: 'Application not found',
+        code: 'APPLICATION_NOT_FOUND'
+      });
+    }
 
-    // Optional: Check if candidate owns the application or employer permission before deleting
-    // For example:
-    // if (req.user.role === 'candidate' && application.candidateId.toString() !== req.user.userId) {
-    //   return res.status(403).json({ error: 'Forbidden' });
-    // }
+    const job = await Job.findById(application.jobId);
+    if (!job) {
+      return res.status(404).json({ 
+        error: 'Associated job not found',
+        code: 'JOB_NOT_FOUND'
+      });
+    }
 
-    await application.remove();
-    res.json({ message: 'Application deleted successfully' });
+    if (job.employerId.toString() !== req.user.userId) {
+      return res.status(403).json({ 
+        error: 'Unauthorized to update this application',
+        code: 'UNAUTHORIZED_ACCESS'
+      });
+    }
+
+    application.status = status;
+    const updatedApplication = await application.save();
+
+    // Safe populate to avoid errors if references are broken
+    const populatedApplication = await safePopulate(
+      Application.findById(updatedApplication._id),
+      [
+        { path: 'jobId', select: 'title company' },
+        { path: 'candidateId', select: 'fullName email' }
+      ]
+    );
+
+    res.json(populatedApplication || updatedApplication);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Delete application
+router.delete('/:id', authenticateJWT, authorizeRoles('candidate', 'employer'), async (req, res, next) => {
+  try {
+    if (!isValidId(req.params.id)) {
+      return res.status(400).json({ 
+        error: 'Invalid application ID',
+        code: 'INVALID_APPLICATION_ID'
+      });
+    }
+
+    const application = await Application.findById(req.params.id);
+    if (!application) {
+      return res.status(404).json({ 
+        error: 'Application not found',
+        code: 'APPLICATION_NOT_FOUND'
+      });
+    }
+
+    if (req.user.role === 'candidate') {
+      const candidate = await Candidate.findOne({ userId: req.user.userId });
+      if (!candidate || !application.candidateId.equals(candidate._id)) {
+        return res.status(403).json({ 
+          error: 'Unauthorized to delete this application',
+          code: 'UNAUTHORIZED_ACCESS'
+        });
+      }
+    } else if (req.user.role === 'employer') {
+      const job = await Job.findById(application.jobId);
+      if (!job || job.employerId.toString() !== req.user.userId) {
+        return res.status(403).json({ 
+          error: 'Unauthorized to delete this application',
+          code: 'UNAUTHORIZED_ACCESS'
+        });
+      }
+    }
+
+    await application.deleteOne();
+    res.json({ 
+      message: 'Application deleted successfully',
+      deletedId: req.params.id
+    });
   } catch (err) {
     next(err);
   }

@@ -1,13 +1,16 @@
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
-const bodyParser = require('body-parser');
 const cors = require('cors');
+const path = require('path');
 
 const app = express();
 
 app.use(cors());
-app.use(bodyParser.json());
+app.use(express.json()); // modern replacement for bodyParser.json()
+
+// Serve uploaded resume files statically
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 const mongoURI = process.env.MONGO_URI;
 const PORT = process.env.PORT || 5000;
@@ -37,15 +40,27 @@ const { authenticateJWT } = require('./middleware/auth');
 
 app.use('/api/auth', authRoutes); // Public routes
 
-// Protected routes
-app.use('/api/jobs', authenticateJWT, jobRoutes);
+// Make GET /api/jobs and GET /api/jobs/:id public (no auth)
+app.use('/api/jobs', (req, res, next) => {
+  if (req.method === 'GET') return next();
+  authenticateJWT(req, res, next);
+});
+app.use('/api/jobs', jobRoutes);
+
+// Other protected routes
 app.use('/api/candidates', authenticateJWT, candidateRoutes);
 app.use('/api/applications', authenticateJWT, applicationRoutes);
 app.use('/api/analytics', authenticateJWT, analyticsRoutes);
 
-// Generic error handler
+// Global error handler (includes multer errors)
 app.use((err, req, res, next) => {
   console.error(err.stack);
+
+  // Handle multer file upload errors gracefully
+  if (err.name === 'MulterError') {
+    return res.status(400).json({ error: err.message });
+  }
+
   res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
 });
 
