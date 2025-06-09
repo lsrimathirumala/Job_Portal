@@ -1,3 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 header, footer {
   background: linear-gradient(90deg, #db2777, #06b6d4);
   padding: 1.5rem 3rem;

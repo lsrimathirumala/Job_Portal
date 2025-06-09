@@ -15,6 +15,7 @@ import JobDetailsPage from './pages/JobDetailsPage';
 import CandidateProfilePage from './pages/CandidateProfilePage';
 import PostJobPage from './pages/PostJobPage';
 import ApplicationListPage from './pages/ApplicationListPage';
+import LandingPage from './pages/LandingPage';
 
 export const AuthContext = createContext();
 
@@ -55,35 +56,49 @@ function App() {
   return (
     <AuthContext.Provider value={{ user, login, logout }}>
       <Router>
-        <nav style={{ padding: 10, borderBottom: '1px solid #ccc' }}>
-          <Link to="/" style={{ marginRight: 10 }}>Jobs</Link>
-          {user ? (
-            <>
-              {user.role === 'employer' && <Link to="/post-job" style={{ marginRight: 10 }}>Post Job</Link>}
-              {user.role === 'candidate' && (
-                <Link to="/profile" style={{ marginRight: 10 }}>My Profile</Link>
-              )}
-              <Link to="/applications" style={{ marginRight: 10 }}>Applications</Link>
-              <button onClick={logout} style={{ cursor: 'pointer' }}>
-                Logout ({user.email})
-              </button>
-            </>
-          ) : (
-            <>
-              <Link to="/login" style={{ marginRight: 10 }}>Login</Link>
-              <Link to="/signup">Signup</Link>
-            </>
-          )}
+        {/* Navigation bar - always visible */}
+        <nav className="bg-white shadow-md py-4 px-6 flex justify-between items-center">
+          <Link to="/" className="text-xl font-bold text-blue-600">JobPortal</Link>
+          
+          <div className="flex items-center space-x-4">
+            {user ? (
+              <>
+                {user.role === 'employer' && (
+                  <Link to="/post-job" className="hover:text-blue-600">Post Job</Link>
+                )}
+                {user.role === 'candidate' && (
+                  <Link to="/profile" className="hover:text-blue-600">My Profile</Link>
+                )}
+                <Link to="/jobs" className="hover:text-blue-600">Jobs</Link>
+                <Link to="/applications" className="hover:text-blue-600">Applications</Link>
+                <button 
+                  onClick={logout} 
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg"
+                >
+                  Logout ({user.email})
+                </button>
+              </>
+            ) : (
+              <>
+                <Link to="/jobs" className="hover:text-blue-600">Browse Jobs</Link>
+                <Link to="/login" className="hover:text-blue-600">Login</Link>
+                <Link 
+                  to="/signup" 
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg"
+                >
+                  Sign Up
+                </Link>
+              </>
+            )}
+          </div>
         </nav>
 
         <Routes>
-          <Route path="/" element={<JobListPage />} />
-
+          <Route path="/" element={<LandingPage />} />
+          <Route path="/jobs" element={<JobListPage />} />
           <Route path="/job/:id" element={<JobDetailsPage />} />
-
-          <Route path="/login" element={user ? <Navigate to="/" /> : <LoginPage />} />
-
-          <Route path="/signup" element={user ? <Navigate to="/" /> : <SignupPage />} />
+          <Route path="/login" element={user ? <Navigate to="/jobs" /> : <LoginPage />} />
+          <Route path="/signup" element={user ? <Navigate to="/jobs" /> : <SignupPage />} />
 
           <Route
             path="/profile"
