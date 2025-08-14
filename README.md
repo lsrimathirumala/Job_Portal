@@ -151,5 +151,3 @@ This project is licensed under the MIT License.
 ## Contact
 
 GitHub: lsrimathirumala
-
-Email: your.email@example.com
